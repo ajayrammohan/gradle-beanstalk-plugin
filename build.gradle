@@ -6,6 +6,8 @@ apply plugin: 'maven'
 apply plugin: 'java-gradle-plugin'
 apply plugin: 'eclipse'
    
+def releaseBuild = Boolean.parseBoolean(System.getProperty('RELEASE_BUILD', 'false'))
+def versionSuffix = releaseBuild ? '' : '-SNAPSHOT'
 def env = System.getenv()
 def nexusUser = env['nexusUser']
 def nexusPassword = env['nexusPassword']
@@ -43,7 +45,7 @@ dependencies {
 }
 
 group = 'com.elektrobit.odin'
-version '0.0.65'
+version "0.0.65$versionSuffix"
 
 pluginBundle {
     website = 'https://github.com/EvidentSolutions/gradle-beanstalk-plugin'

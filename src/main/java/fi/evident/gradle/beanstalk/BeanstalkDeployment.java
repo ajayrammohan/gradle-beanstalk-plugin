@@ -1,5 +1,7 @@
 package fi.evident.gradle.beanstalk;
 
+import java.util.Map;
+
 public class BeanstalkDeployment {
 
     private final String name;
@@ -11,7 +13,16 @@ public class BeanstalkDeployment {
     private String arnRole;
     private String s3Endpoint;
     private String beanstalkEndpoint;
-    
+    private Map<String,String> propertyMap;
+
+    public Map<String, String> getPropertyMap() {
+        return propertyMap;
+    }
+
+    public void setPropertyMap(Map<String, String> propertyMap) {
+        this.propertyMap = propertyMap;
+    }
+
     public BeanstalkDeployment(String name) {
         this.name = name;
     }

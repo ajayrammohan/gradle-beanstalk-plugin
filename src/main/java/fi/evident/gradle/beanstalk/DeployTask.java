@@ -1,10 +1,8 @@
 package fi.evident.gradle.beanstalk;
 
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.auth.AWSCredentialsProviderChain;
-import com.amazonaws.auth.EnvironmentVariableCredentialsProvider;
-import com.amazonaws.auth.SystemPropertiesCredentialsProvider;
-import com.amazonaws.auth.profile.ProfileCredentialsProvider;
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 import org.gradle.api.DefaultTask;
 import org.gradle.api.tasks.InputFiles;
@@ -12,9 +10,11 @@ import org.gradle.api.tasks.TaskAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.auth.AWSCredentialsProviderChain;
+import com.amazonaws.auth.EnvironmentVariableCredentialsProvider;
+import com.amazonaws.auth.SystemPropertiesCredentialsProvider;
+import com.amazonaws.auth.profile.ProfileCredentialsProvider;
 
 public class DeployTask extends DefaultTask {
 
@@ -41,7 +41,7 @@ public class DeployTask extends DefaultTask {
         String beanstalkEndpoint =Utilities.coalesce(deployment.getBeanstalkEndpoint(),beanstalk.getBeanstalkEndpoint());
         BeanstalkDeployer deployer = new BeanstalkDeployer(s3Endpoint, beanstalkEndpoint, credentialsProvider);
         File warFile = getProject().files(war).getSingleFile();
-        deployer.deploy(warFile, deployment.getApplication(), deployment.getEnvironment(), deployment.getTemplate(), versionLabel);
+        deployer.deploy(warFile, deployment, versionLabel);
     }
 
     public void setBeanstalk(BeanstalkPluginExtension beanstalk) {

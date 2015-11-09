@@ -1,31 +1,46 @@
 package fi.evident.gradle.beanstalk;
 
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.services.elasticbeanstalk.AWSElasticBeanstalk;
-import com.amazonaws.services.elasticbeanstalk.AWSElasticBeanstalkClient;
-import com.amazonaws.services.elasticbeanstalk.model.*;
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.AmazonS3Client;
+import static fi.evident.gradle.beanstalk.EncodingUtils.urlEncode;
+import static java.util.Collections.emptyList;
+import static java.util.Collections.sort;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.util.*;
-
-import static fi.evident.gradle.beanstalk.EncodingUtils.urlEncode;
-import static java.util.Collections.emptyList;
-import static java.util.Collections.sort;
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.services.elasticbeanstalk.AWSElasticBeanstalk;
+import com.amazonaws.services.elasticbeanstalk.AWSElasticBeanstalkClient;
+import com.amazonaws.services.elasticbeanstalk.model.ApplicationVersionDescription;
+import com.amazonaws.services.elasticbeanstalk.model.ConfigurationOptionSetting;
+import com.amazonaws.services.elasticbeanstalk.model.CreateApplicationVersionRequest;
+import com.amazonaws.services.elasticbeanstalk.model.CreateApplicationVersionResult;
+import com.amazonaws.services.elasticbeanstalk.model.CreateEnvironmentRequest;
+import com.amazonaws.services.elasticbeanstalk.model.CreateEnvironmentResult;
+import com.amazonaws.services.elasticbeanstalk.model.DeleteApplicationVersionRequest;
+import com.amazonaws.services.elasticbeanstalk.model.DescribeApplicationVersionsRequest;
+import com.amazonaws.services.elasticbeanstalk.model.DescribeEnvironmentsRequest;
+import com.amazonaws.services.elasticbeanstalk.model.DescribeEnvironmentsResult;
+import com.amazonaws.services.elasticbeanstalk.model.EnvironmentDescription;
+import com.amazonaws.services.elasticbeanstalk.model.S3Location;
+import com.amazonaws.services.elasticbeanstalk.model.UpdateEnvironmentRequest;
+import com.amazonaws.services.elasticbeanstalk.model.UpdateEnvironmentResult;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3Client;
 
 public class BeanstalkDeployer {
-
     private final AmazonS3 s3;
-
     private final AWSElasticBeanstalk elasticBeanstalk;
-
     private static final int VERSIONS_TO_KEEP = 20;
-
     private static final Logger log = LoggerFactory.getLogger(BeanstalkDeployer.class);
 
     public BeanstalkDeployer(String s3Endpoint, String beanstalkEndpoint, AWSCredentialsProvider credentialsProvider) {
@@ -35,23 +50,21 @@ public class BeanstalkDeployer {
         elasticBeanstalk.setEndpoint(beanstalkEndpoint);
     }
 
-    public void deploy(File warFile, String applicationName, String environmentName, String templateName, String versionLabel) {
+    public void deploy(File warFile, BeanstalkDeployment deployment, String versionLabel) {
+        String applicationName = deployment.getApplication();
         log.info("Starting deployment of {}", applicationName);
-
         S3Location bundle = uploadCodeBundle(warFile);
         ApplicationVersionDescription version = createApplicationVersion(bundle, applicationName, versionLabel);
-        deployNewVersion(version.getVersionLabel(), environmentName, applicationName, templateName);
+        deployNewVersion(version.getVersionLabel(), deployment.getEnvironment(), applicationName, deployment.getTemplate(), deployment.getPropertyMap());
         deleteOldVersions(applicationName);
     }
 
     public void deleteOldVersions(String applicationName) {
         DescribeApplicationVersionsRequest search = new DescribeApplicationVersionsRequest();
         search.setApplicationName(applicationName);
-
         List<ApplicationVersionDescription> versions = elasticBeanstalk.describeApplicationVersions(search).getApplicationVersions();
         List<ApplicationVersionDescription> versionsToRemove = versionsToRemove(versions);
         Set<String> deployedLabels = findDeployedLabels(applicationName);
-
         log.info("Removing {} oldest versions of total {} versions", versionsToRemove.size(), versions.size());
         for (ApplicationVersionDescription version : versionsToRemove) {
             if (deployedLabels.contains(version.getVersionLabel())) {
@@ -66,7 +79,6 @@ public class BeanstalkDeployer {
         int numberOfVersionsToRemove = versions.size() - VERSIONS_TO_KEEP;
         if (numberOfVersionsToRemove <= 0)
             return emptyList();
-
         ArrayList<ApplicationVersionDescription> result = new ArrayList<ApplicationVersionDescription>(versions);
         sort(result, new Comparator<ApplicationVersionDescription>() {
             @Override
@@ -74,13 +86,11 @@ public class BeanstalkDeployer {
                 return o1.getDateUpdated().compareTo(o2.getDateUpdated());
             }
         });
-
         return result.subList(0, numberOfVersionsToRemove);
     }
 
     public void deleteApplicationVersion(ApplicationVersionDescription version) {
         log.info("Deleting application version {}", version.getVersionLabel());
-
         DeleteApplicationVersionRequest deleteRequest = new DeleteApplicationVersionRequest();
         deleteRequest.setApplicationName(version.getApplicationName());
         deleteRequest.setVersionLabel(version.getVersionLabel());
@@ -88,46 +98,57 @@ public class BeanstalkDeployer {
         elasticBeanstalk.deleteApplicationVersion(deleteRequest);
     }
 
-    private void deployNewVersion(String versionLabel, String environmentName, String applicationName, String templateName) {
+    private void deployNewVersion(String versionLabel, String environmentName, String applicationName, String templateName, Map<String, String> propertyMap) {
         log.info("Describe environments to check if environment exists");
-
         ArrayList<String> environmentNames = new ArrayList<String>();
         environmentNames.add(environmentName);
         DescribeEnvironmentsRequest describeEnvironmentsRequest = new DescribeEnvironmentsRequest();
         describeEnvironmentsRequest.setEnvironmentNames(environmentNames);
-
         DescribeEnvironmentsResult describeEnvironmentsResult = elasticBeanstalk.describeEnvironments(describeEnvironmentsRequest);
         if (describeEnvironmentsResult.getEnvironments().size() == 0) {
             log.info("Create environment with uploaded application version");
-
             CreateEnvironmentRequest createEnvironmentRequest = new CreateEnvironmentRequest();
             createEnvironmentRequest.setApplicationName(applicationName);
             createEnvironmentRequest.setEnvironmentName(environmentName);
             createEnvironmentRequest.setTemplateName(templateName);
             createEnvironmentRequest.setVersionLabel(versionLabel);
-
+            Collection<ConfigurationOptionSetting> optionSettings = getUpdatedOptionSettings(propertyMap);
+            createEnvironmentRequest.setOptionSettings(optionSettings);
             CreateEnvironmentResult createEnvironmentResult = elasticBeanstalk.createEnvironment(createEnvironmentRequest);
             log.info("Created environment {}", createEnvironmentResult);
         } else {
             log.info("Update environment with uploaded application version");
-
             UpdateEnvironmentRequest updateEnvironmentRequest = new UpdateEnvironmentRequest();
             updateEnvironmentRequest.setEnvironmentName(environmentName);
             updateEnvironmentRequest.setVersionLabel(versionLabel);
-
+            Collection<ConfigurationOptionSetting> optionSettings = getUpdatedOptionSettings(propertyMap);
+            updateEnvironmentRequest.setOptionSettings(optionSettings);
             UpdateEnvironmentResult updateEnvironmentResult = elasticBeanstalk.updateEnvironment(updateEnvironmentRequest);
             log.info("Updated environment {}", updateEnvironmentResult);
         }
     }
 
+    private Collection<ConfigurationOptionSetting> getUpdatedOptionSettings(Map<String, String> propertiesMap) {
+        Collection<ConfigurationOptionSetting> optionSettings = new ArrayList<ConfigurationOptionSetting>();
+        if (propertiesMap != null) {
+            for (String key : propertiesMap.keySet()) {
+                if (key != null) {
+                    String option = key;
+                    String value = propertiesMap.get(key);
+                    ConfigurationOptionSetting configurationOptionSetting = new ConfigurationOptionSetting().withOptionName(option).withValue(value);
+                    optionSettings.add(configurationOptionSetting);
+                }
+            }
+        }
+        return optionSettings;
+    }
+
     private ApplicationVersionDescription createApplicationVersion(S3Location bundle, String applicationName, String versionLabel) {
         log.info("Create application version {} with for application {}", versionLabel, applicationName);
-
         CreateApplicationVersionRequest createApplicationVersionRequest = new CreateApplicationVersionRequest(applicationName, versionLabel);
         createApplicationVersionRequest.setDescription(applicationName + " via Gradle deployment on " + Instant.now());
         createApplicationVersionRequest.setAutoCreateApplication(true);
         createApplicationVersionRequest.setSourceBundle(bundle);
-
         CreateApplicationVersionResult createApplicationVersionResult = elasticBeanstalk.createApplicationVersion(createApplicationVersionRequest);
         log.info("Registered application version {}", createApplicationVersionResult);
         return createApplicationVersionResult.getApplicationVersion();
@@ -136,21 +157,16 @@ public class BeanstalkDeployer {
     private S3Location uploadCodeBundle(File warFile) {
         if (!warFile.exists())
             throw new RuntimeException("war-file " + warFile + " does not exist.");
-
         log.info("Uploading {} to Amazon S3", warFile);
-
         String bucketName = elasticBeanstalk.createStorageLocation().getS3Bucket();
         String key = urlEncode(warFile.getName());
-
         s3.putObject(bucketName, key, warFile);
-
         return new S3Location(bucketName, key);
     }
 
     private Set<String> findDeployedLabels(String applicationName) {
         DescribeEnvironmentsRequest req = new DescribeEnvironmentsRequest();
         req.setApplicationName(applicationName);
-
         Set<String> result = new TreeSet<String>();
         for (EnvironmentDescription description : elasticBeanstalk.describeEnvironments(req).getEnvironments()) {
             if (description.getVersionLabel() != null) { // Ignore null value (for example when environment is launching)
